@@ -11,6 +11,10 @@ namespace ultramodern {
         enum class Resolution {
             Original,
             Original2x,
+            Original3x,
+            Original4x,
+            Original6x,
+            Original8x,
             Auto,
             OptionCount
         };
@@ -83,6 +87,10 @@ namespace ultramodern {
         NLOHMANN_JSON_SERIALIZE_ENUM(ultramodern::renderer::Resolution, {
             {ultramodern::renderer::Resolution::Original, "Original"},
             {ultramodern::renderer::Resolution::Original2x, "Original2x"},
+            {ultramodern::renderer::Resolution::Original3x, "Original3x"},
+            {ultramodern::renderer::Resolution::Original4x, "Original4x"},
+            {ultramodern::renderer::Resolution::Original6x, "Original6x"},
+            {ultramodern::renderer::Resolution::Original8x, "Original8x"},
             {ultramodern::renderer::Resolution::Auto, "Auto"},
         });
 
