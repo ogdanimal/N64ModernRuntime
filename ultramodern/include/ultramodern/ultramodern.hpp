@@ -122,6 +122,25 @@ struct gfx_callbacks_t {
 
 bool is_game_started();
 void quit();
+
+// App lifecycle pause gate (used on Android for background/foreground).
+//
+// set_app_paused(true) is called from the platform event pump when the app is
+// backgrounded; the VI thread (the emulation heartbeat) blocks at a safe point
+// so no further VI/AI messages are produced and the whole emulation quiesces.
+// set_app_paused(false) wakes it. is_app_paused() is consulted by threads that
+// must not run against a torn-down surface while backgrounded.
+//
+// quit() clears the pause and wakes any parked thread so shutdown never
+// deadlocks on a paused VI thread.
+void set_app_paused(bool paused);
+bool is_app_paused();
+
+// Set the global `exited` flag and wake the pause gate. quit() must use this
+// (not a bare exited.store) so `exited` is written under the same mutex the
+// pause predicate reads it under -- see set_exited_and_wake() in events.cpp.
+void set_exited_and_wake();
+
 void join_event_threads();
 void join_thread_cleaner_thread();
 void join_saving_thread();

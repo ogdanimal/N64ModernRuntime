@@ -537,7 +537,13 @@ std::atomic_bool exited = false;
 moodycamel::LightweightSemaphore graphics_shutdown_ready;
 
 void ultramodern::quit() {
-    exited.store(true);
+    // Store `exited` under the pause mutex and wake the VI thread, so a shutdown
+    // requested while the app is backgrounded doesn't deadlock join_event_threads()
+    // on a parked VI thread. This is the sole write site for `exited` -- do not
+    // add a bare exited.store here (see set_exited_and_wake() in events.cpp).
+    ultramodern::set_exited_and_wake();
+    // Also clear any app-pause so the resume path is consistent on next launch.
+    ultramodern::set_app_paused(false);
     GameStatus desired = GameStatus::None;
     game_status.compare_exchange_strong(desired, GameStatus::Quit);
     game_status.notify_all();

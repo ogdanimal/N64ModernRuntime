@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <utility>
 #include <mutex>
+#include <condition_variable>
 #include <queue>
 #include <cstring>
 
@@ -21,6 +22,60 @@ static ultramodern::events::callbacks_t events_callbacks{};
 
 void ultramodern::events::set_callbacks(const ultramodern::events::callbacks_t& callbacks) {
     events_callbacks = callbacks;
+}
+
+// App lifecycle pause gate. See ultramodern.hpp for the contract.
+extern std::atomic_bool exited;
+namespace {
+    std::atomic<bool> app_paused{false};
+    std::mutex app_pause_mutex;
+    std::condition_variable app_pause_cv;
+}
+
+void ultramodern::set_app_paused(bool paused) {
+    {
+        std::lock_guard<std::mutex> lock(app_pause_mutex);
+        app_paused.store(paused);
+    }
+    app_pause_cv.notify_all();
+}
+
+// Shutdown seam for the pause gate. quit() (librecomp) calls this instead of
+// writing `exited` itself, so `exited` is stored UNDER app_pause_mutex -- the
+// same mutex wait_while_app_paused()'s predicate reads it under. That closes the
+// lost-wakeup window structurally: a waiter cannot evaluate the predicate as
+// false and then park in the gap before the flag-set + notify, because the store
+// and the waiter's predicate eval are serialized by the mutex. This is the ONLY
+// write site for `exited`; keep it that way (don't add a bare exited.store
+// elsewhere) or the guarantee is void. notify_all() is intentionally after the
+// unlock: store-under-lock is what fixes the race; notifying post-unlock is the
+// idiomatic form (woken waiters don't immediately re-block on a held mutex).
+void ultramodern::set_exited_and_wake() {
+    {
+        std::lock_guard<std::mutex> lock(app_pause_mutex);
+        exited.store(true);
+    }
+    app_pause_cv.notify_all();
+}
+
+bool ultramodern::is_app_paused() {
+    return app_paused.load();
+}
+
+// Called by the VI thread at a safe point: blocks while the app is paused.
+// Wakes on unpause OR on shutdown (exited) so join_event_threads() can never
+// deadlock waiting for a parked VI thread. Returns true if the caller should
+// bail out because the app is exiting.
+//
+// The under-lock predicate is the SOLE gate (no unlocked pre-check): wait()
+// evaluates it before sleeping, so there is no TOCTOU window on app_paused /
+// exited between an early check and parking. When neither is set the predicate
+// is false and we simply don't sleep, so the common (running) path is still
+// just one mutex acquire + predicate eval per frame.
+static bool wait_while_app_paused() {
+    std::unique_lock<std::mutex> lock(app_pause_mutex);
+    app_pause_cv.wait(lock, [] { return !app_paused.load() || exited.load(); });
+    return exited.load();
 }
 
 struct SpTaskAction {
@@ -184,6 +239,17 @@ void vi_thread_func() {
     int remaining_retraces = 1;
 
     while (!exited) {
+        // Block here while the app is backgrounded. Pausing at the top of the
+        // loop (before any VI/AI message is enqueued) quiesces the whole
+        // emulation: no screen-update actions reach the gfx thread and no AI
+        // messages drive the recompiled audio DSP, so nothing runs against a
+        // torn-down surface. total_vis is wall-clock derived, so it naturally
+        // resyncs to real time on wake (no frame-replay storm). Returns true on
+        // shutdown so a paused VI thread never blocks join_event_threads().
+        if (wait_while_app_paused()) {
+            break;
+        }
+
         // Determine the next VI time (more accurate than adding 16ms each VI interrupt)
         auto next = ultramodern::get_start() + (total_vis * 1000000us) / (60 * ultramodern::get_speed_multiplier());
         //if (next > std::chrono::high_resolution_clock::now()) {
