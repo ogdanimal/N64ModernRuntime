@@ -499,6 +499,23 @@ static const OSViMode dummy_mode = []() {
     return ret;
 }();
 
+// Seed both VI states so they are valid before the VI thread's first tick.
+// Called from init_events() on the creating thread, immediately before the VI
+// thread is spawned -- see the comment there for why not on the VI thread.
+//
+// update_vi() dereferences ViState::mode unconditionally, but the only thing
+// that ever populates it before the game does is set_dummy_vi(), which the VI
+// thread calls solely on the !is_game_started() path. If the game is already
+// running by the time the thread first ticks -- start_game() called during
+// startup rather than from a menu, e.g. an auto-start on launch -- that path
+// never runs and update_vi() derefs a null mode.
+void init_vi_states() {
+    for (ViState& state : events_context.vi.states) {
+        state.mode = &dummy_mode;
+        state.framebuffer = 0x80700000;
+    }
+}
+
 void set_dummy_vi(bool odd) {
     ViState* next_state = events_context.vi.get_next_state();
     next_state->mode = &dummy_mode;
@@ -668,6 +685,12 @@ void ultramodern::init_events(RDRAM_ARG ultramodern::renderer::WindowHandle wind
         }
         throw std::runtime_error("Failed to initialize the renderer");
     }
+
+    // Seed the VI states here rather than inside vi_thread_func, so thread
+    // creation supplies the happens-before. Doing it on the VI thread would
+    // leave a window where a game that reached osViSetMode() first had its mode
+    // clobbered back to the dummy -- which would stick, as games set it once.
+    init_vi_states();
 
     events_context.vi.thread = std::thread{ vi_thread_func };
 }
