@@ -42,6 +42,30 @@ void init_thread_cleanup();
 void change_save_file(const std::u8string& subfolder, const std::u8string& name);
 std::filesystem::path get_save_file_path();
 
+// Save observation hooks.
+//
+// Both are optional, default to unset, and carry no policy: librecomp reports
+// what happened to the save data and the game decides what it means. Set them
+// during startup, before init_saving() spawns the saving thread; they are not
+// designed to be swapped while the game is running.
+
+// Invoked whenever the guest mutates the save buffer, with the affected buffer
+// offset and byte count. Runs on the GUEST thread, after the mutation has been
+// published to the save buffer but BEFORE the saving thread is signalled --
+// deliberately, so that any state the callback sets is already visible to the
+// first flush that can contain this write. Signalling first would let that
+// flush race ahead of the callback. Fired by every mutating path uniformly --
+// pak/sram writes, flash page writes, and flash erases -- so "the guest changed
+// the save data" is the whole contract.
+using save_write_callback_t = void (*)(uint32_t offset, uint32_t count);
+void set_save_write_callback(save_write_callback_t callback);
+
+// Invoked after the save file has been written and finalized on disk, and only
+// when that succeeded. Runs on the SAVING thread; `path` is the file just
+// finalized, so it is safe to read or copy from within the callback.
+using save_flush_callback_t = void (*)(const std::filesystem::path& path);
+void set_save_flush_callback(save_flush_callback_t callback);
+
 // Thread queues.
 constexpr PTR(PTR(OSThread)) running_queue = (PTR(PTR(OSThread)))-1;
 
