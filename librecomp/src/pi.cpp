@@ -98,6 +98,26 @@ struct {
 
 const std::u8string save_folder = u8"saves";
 
+// Save observation hooks. See ultramodern.hpp for the contract. Set during
+// startup before the saving thread exists, so plain pointers are sufficient --
+// they are never reassigned while either thread is reading them.
+static ultramodern::save_write_callback_t save_write_callback = nullptr;
+static ultramodern::save_flush_callback_t save_flush_callback = nullptr;
+
+void ultramodern::set_save_write_callback(ultramodern::save_write_callback_t callback) {
+    save_write_callback = callback;
+}
+
+void ultramodern::set_save_flush_callback(ultramodern::save_flush_callback_t callback) {
+    save_flush_callback = callback;
+}
+
+static void notify_save_write(uint32_t offset, uint32_t count) {
+    if (save_write_callback != nullptr) {
+        save_write_callback(offset, count);
+    }
+}
+
 extern std::filesystem::path config_path;
 
 std::filesystem::path ultramodern::get_save_file_path() {
@@ -127,6 +147,11 @@ void update_save_file() {
     }
     if (!saving_failed) {
         saving_failed = !recomp::finalize_output_file_with_backup(ultramodern::get_save_file_path());
+    }
+    // Only on success: on failure the file on disk is not the buffer we just
+    // wrote, so reporting a flush would hand the callback stale content.
+    if (!saving_failed && save_flush_callback != nullptr) {
+        save_flush_callback(ultramodern::get_save_file_path());
     }
     if (saving_failed) {
         ultramodern::error_handling::message_box("Failed to write to the save file. Check your file permissions and whether the save folder has been moved to Dropbox or similar, as this can cause issues.");
@@ -169,7 +194,8 @@ void save_write_ptr(const void* in, uint32_t offset, uint32_t count) {
         std::lock_guard lock { save_context.save_buffer_mutex };
         memcpy(&save_context.save_buffer[offset], in, count);
     }
-    
+
+    notify_save_write(offset, count);
     save_context.write_sempahore.signal();
 }
 
@@ -183,6 +209,7 @@ void save_write(RDRAM_ARG PTR(void) rdram_address, uint32_t offset, uint32_t cou
         }
     }
 
+    notify_save_write(offset, count);
     save_context.write_sempahore.signal();
 }
 
@@ -203,6 +230,7 @@ void save_clear(uint32_t start, uint32_t size, char value) {
         std::fill_n(save_context.save_buffer.begin() + start, size, value);
     }
 
+    notify_save_write(start, size);
     save_context.write_sempahore.signal();
 }
 
