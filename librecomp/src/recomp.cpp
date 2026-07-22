@@ -84,8 +84,11 @@ bool recomp::register_game(const recomp::GameEntry& entry) {
 
 void recomp::mods::initialize_mods() {
     N64Recomp::live_recompiler_init();
-    std::filesystem::create_directories(config_path / mods_directory);
-    std::filesystem::create_directories(config_path / mod_config_directory);
+    // Non-throwing: a failure to create the mods dirs (e.g. the storage path
+    // vanished) must not std::terminate on an uncaught filesystem_error.
+    std::error_code ec;
+    std::filesystem::create_directories(config_path / mods_directory, ec);
+    std::filesystem::create_directories(config_path / mod_config_directory, ec);
     mod_context->set_mods_config_path(config_path / "mods.json");
     mod_context->set_mod_config_directory(config_path / mod_config_directory);
 }
