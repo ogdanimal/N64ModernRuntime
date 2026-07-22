@@ -254,8 +254,12 @@ size_t get_save_size(recomp::SaveType save_type) {
 void read_save_file() {
     std::filesystem::path save_file_path = ultramodern::get_save_file_path();
 
-    // Ensure the save file directory exists.
-    std::filesystem::create_directories(save_file_path.parent_path());
+    // Ensure the save file directory exists. Non-throwing: if the dir can't be
+    // created (e.g. the SD/storage path vanished), fall through to the open
+    // below, which fails cleanly and clears the save buffer to zeroes rather
+    // than letting an uncaught filesystem_error abort the process.
+    std::error_code ec;
+    std::filesystem::create_directories(save_file_path.parent_path(), ec);
 
     // Read the save file if it exists.
     std::ifstream save_file = recomp::open_input_file_with_backup(save_file_path, std::ios_base::binary);
