@@ -61,6 +61,16 @@ namespace ultramodern {
             Off,
             OptionCount
         };
+        // Framebuffer RAM<->native synchronisation. On by default -- Off is a
+        // workaround for GPU drivers that crash in the compute dispatches that
+        // perform it, and it costs the accuracy of any effect that reads back or
+        // writes raw framebuffer pixels. On is listed first so an unknown or
+        // wrong-typed configuration value falls back to the setting's own default.
+        enum class FramebufferEffects {
+            On,
+            Off,
+            OptionCount
+        };
 
         class GraphicsConfig {
         public:
@@ -73,6 +83,7 @@ namespace ultramodern {
             Antialiasing msaa_option;
             RefreshRate rr_option;
             HighPrecisionFramebuffer hpfb_option;
+            FramebufferEffects fbe_option;
             int rr_manual_value;
             int ds_option;
 
@@ -135,6 +146,13 @@ namespace ultramodern {
             {ultramodern::renderer::HighPrecisionFramebuffer::Auto, "Auto"},
             {ultramodern::renderer::HighPrecisionFramebuffer::On, "On"},
             {ultramodern::renderer::HighPrecisionFramebuffer::Off, "Off"},
+        });
+
+        // On first: an unknown value deserialises to the first pair, and this
+        // setting's default is On.
+        NLOHMANN_JSON_SERIALIZE_ENUM(ultramodern::renderer::FramebufferEffects, {
+            {ultramodern::renderer::FramebufferEffects::On, "On"},
+            {ultramodern::renderer::FramebufferEffects::Off, "Off"},
         });
     }
 }
