@@ -31,6 +31,24 @@ namespace recomp {
         void register_manual_patch_symbols(const ManualPatchSymbol* manual_patch_symbols);
         void read_patch_data(uint8_t* rdram, gpr patch_data_address);
 
+        // Controls what `load_overlay` does with `section_addresses`, which the
+        // recompiled RELOC_HI16/RELOC_LO16 read to resolve a relocatable section's
+        // own absolute references.
+        //
+        // Enabled (the default), a section loaded away from its link address has
+        // its references rebased onto wherever it was loaded -- correct for a game
+        // that relocates an overlay after moving it, or maps it to a fixed virtual
+        // address.
+        //
+        // Disabled, `section_addresses` keeps the link address whatever a load
+        // passes. That is what a game which moves an overlay and does NOT relocate
+        // it actually does on hardware: the copied instructions still carry their
+        // original absolute addresses, so they reach the original copy's data no
+        // matter where the copy runs from. Such a game can have the same section
+        // live at two addresses at once, which a per-load address cannot describe
+        // -- one of the two copies would always be rebased onto the other's data.
+        void set_overlay_relocation_enabled(bool enabled);
+
         void init_overlays();
         const std::unordered_map<uint32_t, uint16_t>& get_vrom_to_section_map();
         uint32_t get_section_ram_addr(uint16_t code_section_index);
@@ -63,5 +81,6 @@ namespace recomp {
 
 extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size);
 extern "C" void unload_overlays(int32_t ram_addr, uint32_t size);
+extern "C" uint32_t unload_overlapping_overlays(int32_t ram_addr, uint32_t size);
 
 #endif
