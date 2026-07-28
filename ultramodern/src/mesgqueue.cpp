@@ -1,4 +1,6 @@
 #include <atomic>
+#include <cstdio>
+#include <cstdlib>
 #include <thread>
 
 #include "blockingconcurrentqueue.h"
@@ -38,6 +40,13 @@ uint64_t ultramodern::debug_external_message_drops() {
 }
 
 bool do_send(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, bool jam, bool block);
+
+// See the increment site in osSendMesg.
+static std::atomic<uint64_t> guest_send_failures{0};
+
+uint64_t ultramodern::debug_guest_send_failures() {
+    return guest_send_failures.load(std::memory_order_relaxed);
+}
 
 void dequeue_external_messages(RDRAM_ARG1) {
     QueuedMessage to_send;
@@ -183,6 +192,24 @@ extern "C" s32 osSendMesg(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, s32 flags)
 
     // Try to send the message.
     bool sent = do_send(PASS_RDRAM mq_, msg, jam, flags == OS_MESG_BLOCK);
+
+    // A guest osSendMesg that FAILS is the guest losing its own message, which
+    // is invisible everywhere else -- the game just gets -1 back and, in the
+    // OS_MESG_NOBLOCK case, usually ignores it. It is the last place an event
+    // can vanish between a retrace the port delivered and an audio frame the
+    // game never ran, so it is counted rather than inferred.
+    if (!sent) {
+        const uint64_t n = guest_send_failures.fetch_add(1, std::memory_order_relaxed) + 1;
+        // Which queue is rejecting matters as much as how many: the count alone
+        // cannot tell an audio-client notification being lost from any other
+        // guest send failing. Logged on powers of two so a standing condition is
+        // visible without burying the run, and only when asked.
+        if (getenv("HH_TRACE_SEND_FAIL") != nullptr && (n & (n - 1)) == 0) {
+            fprintf(stderr, "[mesg] guest osSendMesg FAILED #%llu: queue %08X full (%d/%d), msg %08X\n",
+                    (unsigned long long)n, (uint32_t)mq_, mq->validCount, mq->msgCount,
+                    (uint32_t)(uintptr_t)msg);
+        }
+    }
     
     // Check the queue to see if this thread should swap execution to another.
     ultramodern::check_running_queue(PASS_RDRAM1);
@@ -205,6 +232,24 @@ extern "C" s32 osJamMesg(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, s32 flags) 
 
     // Try to send the message.
     bool sent = do_send(PASS_RDRAM mq_, msg, jam, flags == OS_MESG_BLOCK);
+
+    // A guest osSendMesg that FAILS is the guest losing its own message, which
+    // is invisible everywhere else -- the game just gets -1 back and, in the
+    // OS_MESG_NOBLOCK case, usually ignores it. It is the last place an event
+    // can vanish between a retrace the port delivered and an audio frame the
+    // game never ran, so it is counted rather than inferred.
+    if (!sent) {
+        const uint64_t n = guest_send_failures.fetch_add(1, std::memory_order_relaxed) + 1;
+        // Which queue is rejecting matters as much as how many: the count alone
+        // cannot tell an audio-client notification being lost from any other
+        // guest send failing. Logged on powers of two so a standing condition is
+        // visible without burying the run, and only when asked.
+        if (getenv("HH_TRACE_SEND_FAIL") != nullptr && (n & (n - 1)) == 0) {
+            fprintf(stderr, "[mesg] guest osSendMesg FAILED #%llu: queue %08X full (%d/%d), msg %08X\n",
+                    (unsigned long long)n, (uint32_t)mq_, mq->validCount, mq->msgCount,
+                    (uint32_t)(uintptr_t)msg);
+        }
+    }
     
     // Check the queue to see if this thread should swap execution to another.
     ultramodern::check_running_queue(PASS_RDRAM1);

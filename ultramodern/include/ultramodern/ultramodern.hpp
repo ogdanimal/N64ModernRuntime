@@ -92,6 +92,9 @@ uint64_t debug_external_message_drops();
 // Cumulative VI retrace messages actually SENT to the guest -- gated by
 // retrace_count, so not the same as the number of VI iterations.
 uint64_t debug_retrace_messages_sent();
+// Cumulative osSendMesg calls FROM THE GUEST that failed because the target queue
+// was full. The guest just gets -1 back and usually ignores it.
+uint64_t debug_guest_send_failures();
 size_t debug_gfx_action_count();
 size_t debug_timer_action_count();
 size_t debug_sp_task_count();
