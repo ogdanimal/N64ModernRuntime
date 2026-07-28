@@ -8,6 +8,7 @@
 #include <mutex>
 #include <condition_variable>
 #include <queue>
+#include <cstdlib>
 #include <cstring>
 
 #include "blockingconcurrentqueue.h"
@@ -317,6 +318,17 @@ void vi_thread_func() {
             }
             if (events_context.ai.mq != NULLPTR) {
                 // Send a message to the VI queue, and do not set it to be requeued if the queue was full for the same reason as the VI message above.
+                //
+                // Requeueing these instead was tried on 2026-07-28, on the theory
+                // that a dropped AI message is ~720 frames of audio the game never
+                // synthesises. MEASURED: no effect. Three runs per arm with matched
+                // instrumentation gave consumed 0.901 against 0.905, stdev 0.134
+                // against 0.133, and an identical 19% of windows with an empty
+                // device queue; the audio task rate moved 50.8/s to 51.3/s, which
+                // is nothing. So these messages are not being dropped in any
+                // quantity and the audio shortfall is elsewhere -- it is the
+                // game's own rate control, pinned at its floor by what
+                // get_frames_remaining reports. Left as upstream.
                 ultramodern::enqueue_external_message(events_context.ai.mq, events_context.ai.msg, false, false);
             }
         }
