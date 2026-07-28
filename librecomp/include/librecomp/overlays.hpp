@@ -49,6 +49,27 @@ namespace recomp {
         // -- one of the two copies would always be rebased onto the other's data.
         void set_overlay_relocation_enabled(bool enabled);
 
+        // Controls what `unload_overlapping_overlays` does with a loaded section
+        // that a load overwrites only *part* of.
+        //
+        // Enabled (the default), only the functions whose bytes the load actually
+        // destroys lose their entry in the function map; the section stays loaded
+        // and the rest of it stays callable, which is what the same load does to
+        // rdram on hardware.
+        //
+        // Disabled, any overlap drops the whole section. That is safe in the sense
+        // that nothing stale can be reached, but it is wrong for a game that loads
+        // a small overlay into the middle of a larger one's region: every function
+        // of the larger overlay outside the overwritten range is still valid code
+        // that the game may still call, and dropping it turns a legitimate call
+        // into a `Failed to find function` exit.
+        void set_partial_eviction_enabled(bool enabled);
+
+        // Number of functions dropped out of surviving sections since the last
+        // call, and resets the counter. Sections dropped whole are counted by
+        // `unload_overlapping_overlays`'s return value instead.
+        uint32_t take_partial_eviction_func_count();
+
         void init_overlays();
         const std::unordered_map<uint32_t, uint16_t>& get_vrom_to_section_map();
         uint32_t get_section_ram_addr(uint16_t code_section_index);

@@ -80,6 +80,16 @@ void enqueue_external_message(PTR(OSMesgQueue) mq, OSMesg msg, bool jam, bool re
 void wait_for_external_message(RDRAM_ARG1);
 void wait_for_external_message_timed(RDRAM_ARG1, u32 millis);
 
+// Debug: approximate depths of the three unbounded queues. Each is a
+// BlockingConcurrentQueue with no ceiling, so a consumer that stops draining
+// turns one of them into a memory leak. Read by the port's HH_TRACE_MEM
+// reporter to tell which -- if any -- is the one growing.
+size_t debug_external_message_count();
+size_t debug_gfx_action_count();
+size_t debug_timer_action_count();
+size_t debug_sp_task_count();
+size_t debug_deleted_thread_count();
+
 // Thread scheduling.
 void check_running_queue(RDRAM_ARG1);
 void run_next_thread_and_wait(RDRAM_ARG1);

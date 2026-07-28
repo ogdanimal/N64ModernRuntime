@@ -180,6 +180,53 @@ static std::vector<LoadedSection>::iterator drop_loaded_section(std::vector<Load
     return loaded_sections.erase(it);
 }
 
+// See recomp::overlays::set_partial_eviction_enabled.
+static bool partial_eviction_enabled = true;
+static uint32_t partial_eviction_funcs = 0;
+
+void recomp::overlays::set_partial_eviction_enabled(bool enabled) {
+    partial_eviction_enabled = enabled;
+}
+
+uint32_t recomp::overlays::take_partial_eviction_func_count() {
+    uint32_t count = partial_eviction_funcs;
+    partial_eviction_funcs = 0;
+    return count;
+}
+
+// Removes from the function map only those functions of one loaded section that
+// [start, end) actually overwrites, leaving the section loaded and the rest of
+// its functions callable.
+//
+// This is what the hardware does. A load into the middle of a larger overlay's
+// region destroys the bytes it covers and nothing else; the code above and below
+// it is still sitting in rdram, still valid, and the game is free to call it.
+// Dropping the whole section instead turns every one of those survivors into a
+// hard `get_function` exit.
+static void drop_overwritten_functions(const LoadedSection& loaded, uint32_t start, uint32_t end) {
+    const SectionTableEntry& section = sections_info.code_sections[loaded.section_table_index];
+
+    for (size_t func_index = 0; func_index < section.num_funcs; func_index++) {
+        const auto& func = section.funcs[func_index];
+        uint32_t func_start = func.offset + loaded.loaded_ram_addr;
+        uint32_t func_end = func_start + func.rom_size;
+
+        // A function is destroyed if any part of it is overwritten -- a load that
+        // clips only its tail leaves something that must not be called.
+        if (func_start >= end || func_end <= start) {
+            continue;
+        }
+
+        auto func_it = func_map.find(func_start);
+        // As in drop_loaded_section: only drop the mapping if it still refers to
+        // this section, since a later load may already own that address.
+        if (func_it != func_map.end() && func_it->second == func.func) {
+            func_map.erase(func_it);
+            partial_eviction_funcs++;
+        }
+    }
+}
+
 void load_overlay(size_t section_table_index, int32_t ram) {
     const SectionTableEntry& section = sections_info.code_sections[section_table_index];
 
@@ -303,16 +350,25 @@ extern "C" void unload_overlays(int32_t ram_addr, uint32_t size) {
     }
 }
 
-// Unloads every loaded section that overlaps [ram_addr, ram_addr + size), each
-// one in full, whether or not the range covers all of it.
+// Drops whatever the range [ram_addr, ram_addr + size) destroys, section by
+// section.
 //
-// `unload_overlays` cannot express this: it treats a partially covered section
-// as a programming error and exits. That is the right check for a game whose
-// overlays occupy disjoint slots, but not for one that loads a small overlay
-// into the middle of the region a larger one occupies -- there the bytes of the
-// larger overlay really are destroyed, so the whole of it has to go.
-// Returns how many sections were dropped, which is the only externally visible
-// evidence that an eviction happened at all.
+// `unload_overlays` cannot express this at all: it treats a partially covered
+// section as a programming error and exits, and these overlay slots overlap
+// partially by construction.
+//
+// A section the range covers *entirely* goes as a unit. A section it covers
+// only in part keeps its identity and loses only the functions whose bytes were
+// actually overwritten -- because that is what the load did to rdram. `.file_54`
+// loads 0xA5F0 bytes at 0x803837E0, inside the 0x343A0 that `.file_56` occupies
+// from 0x80358820; that overwrites 22 of `.file_56`'s 454 functions and leaves
+// 432 of them untouched and still perfectly callable, `func_803757B0_8193D0`
+// among them. Dropping the section whole made every one of those 432 a
+// `Failed to find function` abort.
+//
+// Returns how many sections were dropped in full; the functions dropped out of
+// surviving sections are counted separately, via
+// recomp::overlays::take_partial_eviction_func_count.
 extern "C" uint32_t unload_overlapping_overlays(int32_t ram_addr, uint32_t size) {
     uint32_t unload_start = (uint32_t)ram_addr;
     uint32_t unload_end = unload_start + size;
@@ -324,6 +380,12 @@ extern "C" uint32_t unload_overlapping_overlays(int32_t ram_addr, uint32_t size)
         uint32_t section_end = section_start + section.size;
 
         if (unload_start < section_end && section_start < unload_end) {
+            bool covers_whole_section = unload_start <= section_start && unload_end >= section_end;
+            if (partial_eviction_enabled && !covers_whole_section) {
+                drop_overwritten_functions(*it, unload_start, unload_end);
+                ++it;
+                continue;
+            }
             it = drop_loaded_section(it);
             num_unloaded++;
             // Skip incrementing the iterator

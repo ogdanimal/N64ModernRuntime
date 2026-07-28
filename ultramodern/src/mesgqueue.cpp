@@ -18,6 +18,10 @@ void ultramodern::enqueue_external_message(PTR(OSMesgQueue) mq, OSMesg msg, bool
     external_messages.enqueue({mq, msg, jam, requeue_if_blocked});
 }
 
+size_t ultramodern::debug_external_message_count() {
+    return external_messages.size_approx();
+}
+
 bool do_send(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, bool jam, bool block);
 
 void dequeue_external_messages(RDRAM_ARG1) {

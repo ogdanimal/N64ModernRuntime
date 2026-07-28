@@ -192,6 +192,18 @@ ultramodern::renderer::ViRegs* ultramodern::renderer::get_vi_regs() {
     return &events_context.vi.update_screen_regs;
 }
 
+size_t ultramodern::debug_gfx_action_count() {
+    return events_context.action_queue.size_approx();
+}
+
+size_t ultramodern::debug_sp_task_count() {
+    return events_context.sp_task_queue.size_approx();
+}
+
+size_t ultramodern::debug_deleted_thread_count() {
+    return events_context.deleted_threads.size_approx();
+}
+
 extern "C" void osSetEventMesg(RDRAM_ARG OSEvent event_id, PTR(OSMesgQueue) mq_, OSMesg msg) {
     std::lock_guard lock{ events_context.message_mutex };
 

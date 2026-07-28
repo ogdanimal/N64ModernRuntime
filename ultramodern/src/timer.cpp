@@ -44,6 +44,10 @@ struct {
     moodycamel::BlockingConcurrentQueue<Action> action_queue{};
 } timer_context;
 
+size_t ultramodern::debug_timer_action_count() {
+    return timer_context.action_queue.size_approx();
+}
+
 uint64_t duration_to_ticks(std::chrono::high_resolution_clock::duration duration) {
     uint64_t delta_micros = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
     // More accurate than using a floating point timer, will only overflow after running for 12.47 years
