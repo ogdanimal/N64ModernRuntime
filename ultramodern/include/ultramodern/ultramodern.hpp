@@ -85,6 +85,13 @@ void wait_for_external_message_timed(RDRAM_ARG1, u32 millis);
 // turns one of them into a memory leak. Read by the port's HH_TRACE_MEM
 // reporter to tell which -- if any -- is the one growing.
 size_t debug_external_message_count();
+// Cumulative external messages discarded because the guest queue was full and the
+// sender did not ask for a requeue. See mesgqueue.cpp -- the count above cannot
+// see these, because a message is popped before delivery is attempted.
+uint64_t debug_external_message_drops();
+// Cumulative VI retrace messages actually SENT to the guest -- gated by
+// retrace_count, so not the same as the number of VI iterations.
+uint64_t debug_retrace_messages_sent();
 size_t debug_gfx_action_count();
 size_t debug_timer_action_count();
 size_t debug_sp_task_count();

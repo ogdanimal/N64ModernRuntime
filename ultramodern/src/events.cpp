@@ -243,6 +243,13 @@ extern moodycamel::LightweightSemaphore graphics_shutdown_ready;
 
 void set_dummy_vi(bool odd);
 
+// See the increment site in vi_thread_func.
+static std::atomic<uint64_t> retrace_messages_sent{0};
+
+uint64_t ultramodern::debug_retrace_messages_sent() {
+    return retrace_messages_sent.load(std::memory_order_relaxed);
+}
+
 void vi_thread_func() {
     ultramodern::set_native_thread_name("VI Thread");
     // This thread should be prioritized over every other thread in the application, as it's what allows
@@ -310,6 +317,15 @@ void vi_thread_func() {
             ViState* cur_state = events_context.vi.get_cur_state();
             if (remaining_retraces == 0) {
                 if (cur_state->mq != NULLPTR) {
+                    // Count the RETRACE MESSAGES, which is not the same number as
+                    // VI iterations: this branch is gated by retrace_count, so a
+                    // game asking for every-other-retrace gets 30/s out of a
+                    // 60 Hz VI. The guest's whole audio cadence hangs off this
+                    // count -- one retrace becomes one scheduler client
+                    // notification becomes one audio frame -- so measuring VI
+                    // iterations instead of this silently answers the wrong
+                    // question.
+                    retrace_messages_sent.fetch_add(1, std::memory_order_relaxed);
                     // Send a message to the VI queue, and do not set it to be requeued if the queue was full.
                     // The worst case scenario is that the game misses a VI message and has to wait a little longer for the next. 
                     ultramodern::enqueue_external_message(cur_state->mq, cur_state->msg, false, false);

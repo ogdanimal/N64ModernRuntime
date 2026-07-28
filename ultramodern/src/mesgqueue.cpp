@@ -1,3 +1,4 @@
+#include <atomic>
 #include <thread>
 
 #include "blockingconcurrentqueue.h"
@@ -22,14 +23,34 @@ size_t ultramodern::debug_external_message_count() {
     return external_messages.size_approx();
 }
 
+// Cumulative count of external messages that were DISCARDED because the guest's
+// queue was full and the sender asked not to requeue.
+//
+// debug_external_message_count() cannot answer this and was once cited as though
+// it could. A message is popped by try_dequeue BEFORE do_send is attempted, so a
+// drop leaves the queue exactly as empty as a delivery does -- a count of 0 is
+// equally consistent with delivering everything and with dropping everything.
+// This counter is incremented at the only place a message is actually lost.
+static std::atomic<uint64_t> external_message_drops{0};
+
+uint64_t ultramodern::debug_external_message_drops() {
+    return external_message_drops.load(std::memory_order_relaxed);
+}
+
 bool do_send(RDRAM_ARG PTR(OSMesgQueue) mq_, OSMesg msg, bool jam, bool block);
 
 void dequeue_external_messages(RDRAM_ARG1) {
     QueuedMessage to_send;
     std::vector<QueuedMessage> requeued_messages{};
     while (external_messages.try_dequeue(to_send)) {
-        if (!do_send(PASS_RDRAM to_send.mq, to_send.mesg, to_send.jam, false) && to_send.requeue_if_blocked) {
-            requeued_messages.push_back(to_send);
+        if (!do_send(PASS_RDRAM to_send.mq, to_send.mesg, to_send.jam, false)) {
+            if (to_send.requeue_if_blocked) {
+                requeued_messages.push_back(to_send);
+            }
+            else {
+                // The message is gone here, and nothing else records it.
+                external_message_drops.fetch_add(1, std::memory_order_relaxed);
+            }
         }
     }
     for (QueuedMessage& cur_mesg : requeued_messages) {
