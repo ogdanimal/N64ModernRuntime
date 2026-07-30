@@ -303,6 +303,28 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
     // TODO implement unaligned DMA correctly
     if (direction == 0) {
         if (physical_addr >= recomp::rom_base) {
+            // HH_TRACE_DMA=1 logs every cart-ROM DMA.
+            //
+            // This is the runtime check patches/required.c's loader audit asks
+            // for and could not do statically. Only func_8000469C_529C is patched
+            // to call recomp_load_overlays, but three other PI-DMA paths take
+            // their destination from a caller: func_80004838_5438, and the
+            // forwarder func_8000DDB0_E9B0 which has 8 call sites, one of them
+            // inside .file_56. An overlay arriving by any of those is never
+            // registered, so the first indirect call into it dies in
+            // get_function with "Failed to find function".
+            //
+            // do_dma is exhaustive by construction -- every PI DMA passes through
+            // here whatever the guest-side path. Diff this against the [overlay]
+            // load lines: a ROM range appearing here and not there is an
+            // unregistered load.
+            static const bool trace_dma = getenv("HH_TRACE_DMA") != nullptr;
+            if (trace_dma) {
+                fprintf(stderr, "[dma] rom %08X -> ram %08X size %08X\n",
+                        (uint32_t)(physical_addr - recomp::rom_base),
+                        (uint32_t)rdram_address, size);
+            }
+
             // read cart rom
             recomp::do_rom_read(rdram, rdram_address, physical_addr, size);
 
