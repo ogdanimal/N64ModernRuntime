@@ -219,6 +219,20 @@ static bool trace_overlays() {
     return enabled;
 }
 
+// See recomp::overlays::set_reload_repair_enabled.
+static bool reload_repair_enabled = true;
+static uint32_t reload_repair_funcs = 0;
+
+void recomp::overlays::set_reload_repair_enabled(bool enabled) {
+    reload_repair_enabled = enabled;
+}
+
+uint32_t recomp::overlays::take_reload_repair_func_count() {
+    uint32_t count = reload_repair_funcs;
+    reload_repair_funcs = 0;
+    return count;
+}
+
 // Removes from the function map only those functions of one loaded section that
 // [start, end) actually overwrites, leaving the section loaded and the rest of
 // its functions callable.
@@ -623,6 +637,47 @@ extern "C" uint32_t register_unannounced_overlays(uint32_t rom, int32_t ram_addr
         }
     );
     if (already_loaded) {
+        // ...but "in loaded_sections" is not the same as "callable", and the two
+        // books disagree exactly when this matters. Partial eviction deliberately
+        // leaves an overlapped section LOADED while dropping the functions the
+        // overlapping load destroyed, so after `.file_55` lands on `.file_56` the
+        // section is still listed and 147 of its functions are gone from func_map.
+        //
+        // A re-load then repairs nothing, because this early return runs before
+        // load_overlay. On hardware the re-DMA puts every one of those functions
+        // back; here they stayed missing, and the game called one --
+        // `func_803758FC_81951C` at 0x803758FC, the handler that
+        // `func_803757B0_8193D0` installs.
+        //
+        // So repair rather than assume: if any of this section's functions is
+        // missing or now owned by something else, its bytes have just arrived and
+        // it owns them again. Dropping and re-adding is what makes that consistent
+        // -- the drop takes the stale entry and any neighbour these bytes
+        // destroyed, the add restores the whole section, and there is no duplicate
+        // because the drop precedes the add.
+        //
+        // When nothing is missing the state is already right and this does nothing,
+        // which is the common case: the patched loader's own announced DMA.
+        uint32_t missing = 0;
+        for (size_t func_index = 0; func_index < section.num_funcs; func_index++) {
+            const auto& func = section.funcs[func_index];
+            auto func_it = func_map.find((int32_t)section.ram_addr + func.offset);
+            if (func_it == func_map.end() || func_it->second != func.func) {
+                missing++;
+            }
+        }
+
+        if (missing != 0 && reload_repair_enabled) {
+            unload_overlapping_overlays((int32_t)section.ram_addr, section.size);
+            load_overlay(section_table_index, (int32_t)section.ram_addr);
+            reload_repair_funcs += missing;
+            if (trace_overlays() || getenv("HH_TRACE_DMA") != nullptr) {
+                fprintf(stderr, "[overlay] reload repair: rom %08X -> ram %08X restored %u"
+                                " of %zu functions dropped by an overlapping load\n",
+                        section.rom_addr, section.ram_addr, missing, section.num_funcs);
+                fflush(stderr);
+            }
+        }
         return 0;
     }
 
@@ -641,7 +696,25 @@ extern "C" uint32_t register_unannounced_overlays(uint32_t rom, int32_t ram_addr
     // slot's previous tenant is gone. The range is the section's own extent, since
     // that is what the completed run wrote. The section being registered below is
     // not loaded, so this cannot drop it.
-    unload_overlapping_overlays((int32_t)section.ram_addr, section.size);
+    uint32_t evicted_sections = unload_overlapping_overlays((int32_t)section.ram_addr, section.size);
+
+    // Take the eviction's counters here rather than leaving them for whoever calls
+    // `take_partial_eviction_func_count` next. This path is not
+    // `recomp_evict_overlays`, so what it destroys used to be reported against the
+    // *following* announced eviction: `.file_55` claimed here dropped 147 of
+    // `.file_56`'s functions and kept 1 tail-clipped, and both totals surfaced on
+    // an unrelated 0xA30 eviction 130 lines later, which cannot contain 147
+    // functions. A count is worthless if it names the wrong load.
+    uint32_t evicted_funcs = recomp::overlays::take_partial_eviction_func_count();
+    uint32_t kept_funcs = recomp::overlays::take_tail_clip_func_count();
+    if ((evicted_sections != 0 || evicted_funcs != 0 || kept_funcs != 0)
+        && (trace_overlays() || getenv("HH_TRACE_DMA") != nullptr)) {
+        fprintf(stderr, "[overlay] the claim of ram %08X dropped %u section%s and %u function%s,"
+                        " kept %u tail-clipped\n",
+                section.ram_addr, evicted_sections, evicted_sections == 1 ? "" : "s",
+                evicted_funcs, evicted_funcs == 1 ? "" : "s", kept_funcs);
+        fflush(stderr);
+    }
 
     load_overlay(section_table_index, (int32_t)section.ram_addr);
     if (out != nullptr) {

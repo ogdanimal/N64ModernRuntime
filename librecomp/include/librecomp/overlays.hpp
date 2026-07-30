@@ -89,6 +89,21 @@ namespace recomp {
         // the counter.
         uint32_t take_tail_clip_func_count();
 
+        // Controls whether a section whose bytes arrive again, while it is still
+        // listed as loaded, has its missing functions restored.
+        //
+        // It can be listed and not callable at the same time, and that is by
+        // design: partial eviction leaves an overlapped section loaded while
+        // dropping the functions the overlapping load destroyed. A re-load then
+        // has to put them back, because that is what the re-DMA does to rdram --
+        // without it the section stays half-callable forever and the game exits on
+        // the first of the missing functions it calls.
+        void set_reload_repair_enabled(bool enabled);
+
+        // Number of functions restored that way since the last call, and resets
+        // the counter.
+        uint32_t take_reload_repair_func_count();
+
         void init_overlays();
         const std::unordered_map<uint32_t, uint16_t>& get_vrom_to_section_map();
         uint32_t get_section_ram_addr(uint16_t code_section_index);
