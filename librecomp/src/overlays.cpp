@@ -481,7 +481,10 @@ extern "C" uint32_t unload_overlapping_overlays(int32_t ram_addr, uint32_t size)
 // the DMA, so by the time do_dma sees the same transfer the section is already
 // in loaded_sections at that address and is skipped.
 extern "C" uint32_t register_unannounced_overlays(uint32_t rom, int32_t ram_addr, uint32_t size,
-                                                 uint32_t* ram_out, uint32_t* rejected_out) {
+                                                 UnannouncedOverlay* out) {
+    if (out != nullptr) {
+        *out = UnannouncedOverlay{};
+    }
     if (size == 0 || sections_info.num_code_sections == 0) {
         return 0;
     }
@@ -521,8 +524,8 @@ extern "C" uint32_t register_unannounced_overlays(uint32_t rom, int32_t ram_addr
     // Condition 2: the base this chunk implies is the section's link address.
     int32_t implied_base = ram_addr - (int32_t)(rom - section.rom_addr);
     if (implied_base != (int32_t)section.ram_addr) {
-        if (rejected_out != nullptr) {
-            *rejected_out = (uint32_t)implied_base;
+        if (out != nullptr) {
+            out->declined_ram = (uint32_t)implied_base;
         }
         return 0;
     }
@@ -589,8 +592,10 @@ extern "C" uint32_t register_unannounced_overlays(uint32_t rom, int32_t ram_addr
     unload_overlapping_overlays((int32_t)section.ram_addr, section.size);
 
     load_overlay(section_table_index, (int32_t)section.ram_addr);
-    if (ram_out != nullptr) {
-        *ram_out = section.ram_addr;
+    if (out != nullptr) {
+        out->section_rom = section.rom_addr;
+        out->section_ram = section.ram_addr;
+        out->section_size = section.size;
     }
 
     return 1;

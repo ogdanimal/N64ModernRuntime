@@ -341,22 +341,27 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
             // exactly, so the fix can be attributed.
             static const bool register_unannounced = getenv("HH_NO_DMA_OVERLAY_REGISTER") == nullptr;
             if (register_unannounced) {
-                uint32_t registered_ram = 0;
-                uint32_t rejected_ram = 0;
-                uint32_t num = register_unannounced_overlays(rom_offset, (int32_t)rdram_address, size,
-                                                             &registered_ram, &rejected_ram);
+                UnannouncedOverlay claim{};
+                uint32_t num = register_unannounced_overlays(rom_offset, (int32_t)rdram_address, size, &claim);
                 // Always reported, not only under the trace: this is a load the
                 // game performed that the port had no other record of, and it is
                 // rare -- one line per unannounced overlay, not one per DMA.
+                //
+                // The section's own rom/ram/size come first, because those are what
+                // identify the overlay. The DMA that completed it is reported
+                // separately and is usually a short tail chunk -- printing that
+                // chunk's rom next to the section's ram, as this line first did,
+                // reads as a load from the wrong ROM address entirely.
                 if (num != 0) {
                     fprintf(stderr, "[overlay] claimed an unannounced load: rom %08X -> ram %08X size %08X"
-                                    " (%u section%s)\n",
-                            rom_offset, registered_ram, size, num, num == 1 ? "" : "s");
+                                    " (completed by a DMA of %08X bytes at rom %08X)\n",
+                            claim.section_rom, claim.section_ram, claim.section_size,
+                            size, rom_offset);
                 }
-                else if (rejected_ram != 0 && trace_dma) {
-                    fprintf(stderr, "[overlay] declined an unannounced load: rom %08X -> ram %08X size %08X"
-                                    " (relocated away from its link address)\n",
-                            rom_offset, rejected_ram, size);
+                else if (claim.declined_ram != 0 && trace_dma) {
+                    fprintf(stderr, "[overlay] declined an unannounced load: rom %08X size %08X implies"
+                                    " base %08X, which is not the section's link address\n",
+                            rom_offset, size, claim.declined_ram);
                 }
             }
 

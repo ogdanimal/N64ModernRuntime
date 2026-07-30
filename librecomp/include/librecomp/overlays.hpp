@@ -109,15 +109,30 @@ extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size);
 extern "C" void unload_overlays(int32_t ram_addr, uint32_t size);
 extern "C" uint32_t unload_overlapping_overlays(int32_t ram_addr, uint32_t size);
 
+// What register_unannounced_overlays claimed, or declined to claim.
+//
+// The three `section_*` fields describe the OVERLAY, not the DMA that completed
+// it. Those are different numbers and confusing them misidentifies the overlay: a
+// chunked load is claimed on its final chunk, so the triggering DMA is typically a
+// short tail -- .file_56's was rom 0x82F440 size 0x13A0, against the section's rom
+// 0x7FC440 size 0x343A0.
+struct UnannouncedOverlay {
+    // Valid when register_unannounced_overlays returned nonzero.
+    uint32_t section_rom;
+    uint32_t section_ram;
+    uint32_t section_size;
+    // Set instead when a chunk looked like an overlay load but implied a base
+    // other than the section's link address, so a caller tracing DMA can see the
+    // near-misses. Zero when nothing was declined.
+    uint32_t declined_ram;
+};
+
 // Registers an overlay that a raw cart DMA delivered without anything having
 // announced it. See the definition in overlays.cpp for the full rationale and
 // for exactly which loads it will and will not claim.
 //
-// `rejected_out` receives the ram address of a section that looked like an
-// overlay load but failed the placement test, so a caller tracing DMA can see
-// the near-misses. Returns the number of sections newly registered, and writes
-// the last one's ram address to `ram_out`.
+// Returns the number of sections newly registered (0 or 1).
 extern "C" uint32_t register_unannounced_overlays(uint32_t rom, int32_t ram_addr, uint32_t size,
-                                                 uint32_t* ram_out, uint32_t* rejected_out);
+                                                 UnannouncedOverlay* out);
 
 #endif
