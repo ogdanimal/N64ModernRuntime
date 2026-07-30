@@ -95,6 +95,61 @@ uint64_t debug_retrace_messages_sent();
 // Cumulative osSendMesg calls FROM THE GUEST that failed because the target queue
 // was full. The guest just gets -1 back and usually ignores it.
 uint64_t debug_guest_send_failures();
+// Cumulative osSpTaskYield calls. The only caller in Hybrid Heaven is the guest's
+// audio-dispatch thread (func_80000A5C_165C), which yields ONLY when it finds a
+// gfx task in flight on the RSP (sc+0x88C non-null) at the moment an audio task
+// arrives. The rate of this counter against the audio task rate is therefore a
+// direct measurement of how often the audio pipeline takes the yield/handoff
+// path -- the path where, with yields ignored (librecomp/sp.cpp), the audio
+// dispatcher consumes the gfx task's SP-done off the shared sc+0xE8 queue and
+// re-posts a substitute after its own task completes.
+void debug_note_sp_task_yield();
+uint64_t debug_sp_task_yields();
+// External-message delivery latency over a window: messages delivered, total and
+// max microseconds between enqueue (on the VI/gfx/task host thread) and the
+// guest-side dequeue that actually attempts do_send. Reading RESETS the window.
+//
+// This is the number that tests the cooperative-delivery hypothesis: external
+// messages are only delivered when a running guest thread reaches a scheduling
+// point (osSendMesg/osRecvMesg) or when every guest thread is blocked and the
+// idle path pumps. If delivery latency regularly spans a large fraction of a
+// frame during gameplay, the guest's audio chain -- which needs one retrace
+// delivery and one SP-done delivery per audio frame -- is quantized to the main
+// thread's scheduling-point cadence, and that quantization is the trough.
+void debug_external_delivery_window(uint64_t* count, uint64_t* total_us, uint64_t* max_us);
+// Cumulative osGetTime calls -- see the counter in timer.cpp. Differencing this
+// across a frame interval separates "stalled spinning on the clock" (tens of
+// thousands) from "stalled doing work" (a handful).
+uint64_t debug_osgettime_calls();
+
+// ON BY DEFAULT at 1000us (HH_OSGETTIME_YIELD_US=<us> overrides; =0 disables and
+// restores the pre-fix behaviour exactly): turn osGetTime into a throttled
+// scheduling point.
+//
+// This is the fix for BOTH the periodic frametime hitch and the audio
+// oscillation, measured in gameplay and confirmed by ear: 843 periodic 67ms
+// spikes -> 0, audio a flat 60.0 tasks/s at `consumed` 1.000 with zero drops and
+// zero empty-queue windows. It supersedes HH_AUDIO_INLINE_RSP, which addressed
+// only the audio half and is now redundant.
+//
+// Hybrid Heaven's frame governor busy-waits on osGetTime for most of every frame
+// without making a single blocking call, so the main thread -- the LOWEST
+// priority guest thread -- holds execution while external messages (retrace,
+// SP-done, DP-done) sit undelivered. Measured in gameplay: 7.93ms mean, 33.45ms
+// worst. A retrace delayed that long delays the gfx dispatcher, which leaves the
+// previous frame's task in flight, and the game skips its render when it polls
+// sc+0x89C and finds it still set. Delivering (and yielding) from inside the
+// spin is the direct test of that chain.
+//
+// Throttled because the spin calls osGetTime ~19M times/second; `now_counts` is
+// the value osGetTime already computed, so the gate costs no extra clock read.
+// May block: check_running_queue can swap to a higher-priority guest thread,
+// exactly as osSendMesg/osRecvMesg already can.
+void osgettime_scheduling_point(RDRAM_ARG uint64_t now_counts);
+// How many times the above actually delivered, so a run can prove the switch
+// engaged rather than inferring it from the env var being set.
+uint64_t debug_osgettime_yields();
+
 size_t debug_gfx_action_count();
 size_t debug_timer_action_count();
 size_t debug_sp_task_count();

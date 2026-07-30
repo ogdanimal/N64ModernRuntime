@@ -38,6 +38,11 @@ extern "C" void osSpTaskStartGo_recomp(uint8_t* rdram, recomp_context* ctx) {
 
 extern "C" void osSpTaskYield_recomp(uint8_t* rdram, recomp_context* ctx) {
     // Ignore yield requests (acts as if the task completed before it received the yield request)
+    //
+    // Counted because in Hybrid Heaven the only caller is the audio dispatcher's
+    // "gfx task is on the RSP" path, so this rate says how often audio frames
+    // take the yield/handoff detour. See debug_sp_task_yields in ultramodern.hpp.
+    ultramodern::debug_note_sp_task_yield();
 }
 
 extern "C" void osSpTaskYielded_recomp(uint8_t* rdram, recomp_context* ctx) {

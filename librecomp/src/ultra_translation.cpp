@@ -81,6 +81,14 @@ extern "C" void osGetTime_recomp(uint8_t * rdram, recomp_context * ctx) {
     uint64_t total_count = osGetTime();
     ctx->r2 = (int32_t)(total_count >> 32);
     ctx->r3 = (int32_t)(total_count >> 0);
+    // ON by default and internally throttled; HH_OSGETTIME_YIELD_US=0 is the A/B
+    // that restores the pre-fix behaviour. See osgettime_yield_interval() in
+    // mesgqueue.cpp, which owns the default.
+    // Hooked here rather than in osGetTime() itself because delivery needs rdram.
+    // The result is written above first: this call can yield to another guest
+    // thread and return microseconds later, and the guest is happy to receive
+    // the pre-yield reading -- it costs at most one extra spin iteration.
+    ultramodern::osgettime_scheduling_point(PASS_RDRAM total_count);
 }
 
 extern "C" void osSetTime_recomp(uint8_t * rdram, recomp_context * ctx) {

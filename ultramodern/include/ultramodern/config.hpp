@@ -72,6 +72,23 @@ namespace ultramodern {
             OptionCount
         };
 
+        // Host swap-chain vsync. Off selects VK_PRESENT_MODE_IMMEDIATE_KHR under
+        // Vulkan -- only where the device reports support, plume falls back to
+        // FIFO otherwise -- and syncInterval 0 + ALLOW_TEARING under D3D12. On is
+        // listed first so an unknown value falls back to the safe default, and
+        // because On is what the port did unconditionally before this existed.
+        //
+        // This does NOT change how fast the game runs. Hybrid Heaven paces itself
+        // with its own frame governor and the port forces RT64's PresentEarly
+        // presentation mode, so presentation already measured as non-blocking
+        // (present 0.0 ms in every frame trace). It is a latency/tearing
+        // preference, not a performance switch.
+        enum class VSync {
+            On,
+            Off,
+            OptionCount
+        };
+
         class GraphicsConfig {
         public:
             bool developer_mode;
@@ -84,6 +101,7 @@ namespace ultramodern {
             RefreshRate rr_option;
             HighPrecisionFramebuffer hpfb_option;
             FramebufferEffects fbe_option;
+            VSync vsync_option;
             int rr_manual_value;
             int ds_option;
 
@@ -153,6 +171,13 @@ namespace ultramodern {
         NLOHMANN_JSON_SERIALIZE_ENUM(ultramodern::renderer::FramebufferEffects, {
             {ultramodern::renderer::FramebufferEffects::On, "On"},
             {ultramodern::renderer::FramebufferEffects::Off, "Off"},
+        });
+
+        // On first, for the same reason: unknown or wrong-typed values land on
+        // the default rather than silently disabling vsync.
+        NLOHMANN_JSON_SERIALIZE_ENUM(ultramodern::renderer::VSync, {
+            {ultramodern::renderer::VSync::On, "On"},
+            {ultramodern::renderer::VSync::Off, "Off"},
         });
     }
 }

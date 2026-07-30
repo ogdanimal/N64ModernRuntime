@@ -361,6 +361,18 @@ void sp_complete() {
     ultramodern::enqueue_external_message(events_context.sp.mq, events_context.sp.msg, false, true);
 }
 
+// See the declaration in ultramodern.hpp: counts entries into the guest audio
+// dispatcher's yield path, via librecomp's osSpTaskYield.
+static std::atomic<uint64_t> sp_task_yields{0};
+
+void ultramodern::debug_note_sp_task_yield() {
+    sp_task_yields.fetch_add(1, std::memory_order_relaxed);
+}
+
+uint64_t ultramodern::debug_sp_task_yields() {
+    return sp_task_yields.load(std::memory_order_relaxed);
+}
+
 void dp_complete() {
     uint8_t* rdram = events_context.rdram;
     std::lock_guard lock{ events_context.message_mutex };
@@ -675,6 +687,36 @@ extern "C" PTR(void) osViGetCurrentFramebuffer() {
     return events_context.vi.get_cur_state()->framebuffer;
 }
 
+// HH_AUDIO_INLINE_RSP=1 runs non-graphics (i.e. audio) RSP tasks synchronously
+// on the guest thread that called osSpTaskStartGo, instead of handing them to
+// the SP task thread.
+//
+// Why this exists: every hop of the guest's audio chain that crosses a host
+// thread boundary (VI retrace in, SP done out) travels through the external
+// message queue, and external messages are only delivered when a running guest
+// thread reaches a scheduling point. The SP-done round trip -- task thread runs
+// aspMain, sp_complete() enqueues, the guest audio dispatcher's blocking
+// osRecvMesg on sc+0xE8 can only complete after some guest thread pumps the
+// external queue -- therefore inherits the main thread's scheduling-point
+// cadence, and the audio dispatcher (guest priority 120) sits blocked for the
+// whole gap. Running the task inline removes that round trip completely: by the
+// time osSpTaskStartGo returns, aspMain has run (0.2-0.3 ms of host time) and
+// the SP-done message is already sitting in the external queue, so the
+// dispatcher's immediately-following osRecvMesg delivers it to itself with zero
+// added latency (osRecvMesg drains external messages before receiving).
+//
+// Concurrency: audio is the only non-gfx task type this port handles, and with
+// this switch on nothing else ever runs on the RSP state concurrently -- the
+// task thread goes permanently idle, which is strictly LESS parallel than the
+// shipped behaviour. Gfx tasks are unaffected; they go to RT64 as actions.
+//
+// Off by default: no default behaviour changes in this tree without a measured
+// run. See docs/frametime-investigation.md for the A/B this was added for.
+static bool inline_audio_tasks() {
+    static const bool on = getenv("HH_AUDIO_INLINE_RSP") != nullptr;
+    return on;
+}
+
 void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
     OSTask* task = TO_PTR(OSTask, task_);
 
@@ -684,6 +726,14 @@ void ultramodern::submit_rsp_task(RDRAM_ARG PTR(OSTask) task_) {
     }
     // Set all other tasks as the RSP task
     else {
+        if (inline_audio_tasks()) {
+            if (!ultramodern::rsp::run_task(PASS_RDRAM task)) {
+                fprintf(stderr, "Failed to execute task type: %" PRIu32 "\n", task->t.type);
+                ULTRAMODERN_QUICK_EXIT();
+            }
+            sp_complete();
+            return;
+        }
         events_context.sp_task_queue.enqueue(task);
     }
 }

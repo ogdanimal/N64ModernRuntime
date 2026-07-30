@@ -172,7 +172,19 @@ extern "C" void osSetCount(u32 count) {
     assert(false);
 }
 
+// Counts osGetTime calls, for stall forensics. The guest's frame governor
+// (func_80001454_2054 in Hybrid Heaven) busy-waits on osGetTime; a frame
+// interval containing tens of thousands of these calls stalled in the SPIN,
+// one containing a handful stalled doing WORK. Relaxed atomic add on a clock
+// path that already does a clock_gettime -- unmeasurable.
+static std::atomic<uint64_t> osgettime_calls{0};
+
+uint64_t ultramodern::debug_osgettime_calls() {
+    return osgettime_calls.load(std::memory_order_relaxed);
+}
+
 extern "C" OSTime osGetTime() {
+    osgettime_calls.fetch_add(1, std::memory_order_relaxed);
     uint64_t total_count = time_now() - ostime_offset;
 
     return total_count;
