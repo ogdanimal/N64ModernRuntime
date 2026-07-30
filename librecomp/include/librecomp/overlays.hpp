@@ -70,6 +70,25 @@ namespace recomp {
         // `unload_overlapping_overlays`'s return value instead.
         uint32_t take_partial_eviction_func_count();
 
+        // Controls what partial eviction does with a function whose FINAL WORD is
+        // the only thing a load overwrites.
+        //
+        // Tolerated (the default), it keeps its entry in the function map. That
+        // word is the delay slot of the returning `jr $ra`; the instructions that
+        // do the function's work are untouched, and the recompiled function is
+        // host code translated from all of them at build time, so the clipped
+        // word never executes either way. What lands there is a neighbouring
+        // overlay's base address, not code the game intends to run.
+        //
+        // Not tolerated, any overwritten byte drops the function, which is strictly
+        // safer and cost this port `func_803757B0_8193D0`: `.file_55` loads onto
+        // its last four bytes and the game calls it immediately afterwards.
+        void set_tail_clip_tolerated(bool tolerated);
+
+        // Number of functions kept by that rule since the last call, and resets
+        // the counter.
+        uint32_t take_tail_clip_func_count();
+
         void init_overlays();
         const std::unordered_map<uint32_t, uint16_t>& get_vrom_to_section_map();
         uint32_t get_section_ram_addr(uint16_t code_section_index);

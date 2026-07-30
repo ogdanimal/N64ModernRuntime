@@ -200,6 +200,25 @@ uint32_t recomp::overlays::take_partial_eviction_func_count() {
     return count;
 }
 
+// See recomp::overlays::set_tail_clip_tolerated.
+static bool tail_clip_tolerated = true;
+static uint32_t tail_clip_funcs = 0;
+
+void recomp::overlays::set_tail_clip_tolerated(bool tolerated) {
+    tail_clip_tolerated = tolerated;
+}
+
+uint32_t recomp::overlays::take_tail_clip_func_count() {
+    uint32_t count = tail_clip_funcs;
+    tail_clip_funcs = 0;
+    return count;
+}
+
+static bool trace_overlays() {
+    static const bool enabled = getenv("HH_TRACE_OVERLAYS") != nullptr;
+    return enabled;
+}
+
 // Removes from the function map only those functions of one loaded section that
 // [start, end) actually overwrites, leaving the section loaded and the rest of
 // its functions callable.
@@ -217,9 +236,42 @@ static void drop_overwritten_functions(const LoadedSection& loaded, uint32_t sta
         uint32_t func_start = func.offset + loaded.loaded_ram_addr;
         uint32_t func_end = func_start + func.rom_size;
 
-        // A function is destroyed if any part of it is overwritten -- a load that
-        // clips only its tail leaves something that must not be called.
+        // A function is destroyed if a real instruction of it is overwritten.
         if (func_start >= end || func_end <= start) {
+            continue;
+        }
+
+        // ...but a load whose only casualty is the function's FINAL WORD has not
+        // destroyed a real instruction. That word is the delay slot of the
+        // returning `jr $ra`; every instruction that does the function's work is
+        // intact, and on hardware the function still runs and still returns.
+        //
+        // This is not a tolerance for damage, because the guest's copy of that
+        // word never executes here. The recompiled function is host code
+        // translated from all of the original words at build time, so what the
+        // clip leaves in rdram changes nothing about what running it does. And
+        // the clip is not the game overwriting code it means to replace: it is a
+        // neighbouring overlay's base address landing on the tail padding of the
+        // slot's previous tenant. `.file_55` loads at 0x803757E0, four bytes
+        // inside `func_803757B0_8193D0` (0x803757B0-0x803757E4) -- 12 real
+        // instructions untouched.
+        //
+        // Dropping it anyway is what a strict guard does, and it costs the whole
+        // function: the game calls 0x803757B0 immediately afterwards and the port
+        // exits in `get_function`. Registering `.file_56` is what made this reach
+        // daylight -- before that, the entry this rule drops was never added.
+        //
+        // `start` alone decides it: an overlap that begins at or after the last
+        // word cannot touch anything before it, whatever `end` is. Single-word
+        // functions are excluded -- their last word is also their first.
+        if (tail_clip_tolerated && func.rom_size > 4 && start >= func_end - 4) {
+            tail_clip_funcs++;
+            if (trace_overlays()) {
+                fprintf(stderr, "[overlay] tail clip: %08X-%08X keeps its entry, load %08X-%08X"
+                                " takes only its last word\n",
+                        func_start, func_end, start, end);
+                fflush(stderr);
+            }
             continue;
         }
 
