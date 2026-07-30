@@ -2,6 +2,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 
@@ -155,6 +156,11 @@ std::span<const RelocEntry> recomp::overlays::get_section_relocs(uint16_t code_s
 
 void recomp::overlays::add_loaded_function(int32_t ram, recomp_func_t* func) {
     func_map[ram] = func;
+}
+
+recomp_func_t* recomp::overlays::find_loaded_function(int32_t ram) {
+    auto it = func_map.find(ram);
+    return it == func_map.end() ? nullptr : it->second;
 }
 
 // Removes one loaded section from the function map and the loaded-section list,
@@ -395,6 +401,199 @@ extern "C" uint32_t unload_overlapping_overlays(int32_t ram_addr, uint32_t size)
     }
 
     return num_unloaded;
+}
+
+// Registers an overlay that arrived by a cart DMA nothing announced.
+//
+// Hybrid Heaven has TWO loaders for its Nisitenma-Ichigo archive, and the port
+// patches one. Both take (file_id, dest), both bound the id at 0x271, and both
+// read the same two tables -- the file table at 0x80038FE0 for the ROM address
+// and the load-address table at 0x80037C5C for the extent:
+//
+//   func_8000469C_529C   the blocking loader. Patched in patches/required.c,
+//                        which announces the load before moving the bytes.
+//   func_80004838_5438   an asynchronous streaming variant, which records the
+//                        transfer at D_800892B0+0x42AD.. and returns. NOT
+//                        patched, and nothing announces what it loads.
+//
+// Those two are the whole class: a scan of every function in the game for a
+// reference to the file table finds exactly these, and no other translation
+// unit references it at all. So a load through the second one leaves the
+// recompiler with no mapping from the overlay's vram to its native code, and
+// the first indirect call into it aborts in get_function.
+//
+// That is not hypothetical -- it is the `Failed to find function at 0x803757B0`
+// abort. 0x803757B0 is func_803757B0_8193D0 in .file_56 (archive entry 56,
+// loader file_id 57, ROM 0x7FC440, slot 0x80358820). The game reaches it through
+// a function pointer that lives at vram 0x803883EC, and the word 0x803757B0
+// occurs exactly ONCE in the entire ROM: at ROM 0x82C00C, inside .file_56's own
+// data, which is what maps to 0x803883EC when .file_56 is resident. Nothing
+// computes the address arithmetically either. So the game could only have read
+// that pointer out of .file_56's data, .file_56's bytes were therefore in rdram
+// -- and no [overlay] line in either traced crash ever registered ROM 0x7FC440.
+// The bytes arrived; the announcement did not.
+//
+// do_dma is the one place that is exhaustive by construction: every PI DMA
+// passes through it whatever the guest-side path, so this needs no dataflow
+// closure over callers and no second loader reimplemented in MIPS.
+//
+// The load is CHUNKED, which is the whole difficulty. func_80004838_5438 keeps
+// its transfer state in D_800892B0: 0x42B0 the current ROM address, 0x42B4 the
+// current destination, 0x42B8 what is left, 0x42CC the chunk size. Each call
+// DMAs one chunk, advances all three by the chunk, and returns; only when the
+// remainder fits in a single chunk does it transfer the rest. A 0x343A0 overlay
+// therefore arrives as a run of smaller DMAs, of which only the first begins at
+// the section's rom_addr and none but the last completes it. So this cannot test
+// a single DMA and decide -- it has to follow the run.
+//
+// The cost of being exhaustive is that most cart DMAs are not overlay loads at
+// all, and claiming one that isn't would be worse than the bug. Two conditions
+// gate every chunk, and both are cheap and read nothing mutable:
+//
+//   1. the chunk's ROM range lies inside a known code section;
+//   2. the chunk lands where that section's bytes would have to go for the load
+//      to be placing it at its own link address -- ram - (rom - rom_addr) ==
+//      ram_addr.
+//
+// (2) is exact rather than a heuristic: tools/verify_overlay_hook.py asserts for
+// all 92 overlays that the load-address table's `start` IS the section's
+// ram_addr, and that each file's ROM range covers its own section and no other.
+// The pair excludes every fixed destination in the game's own loader audit -- the
+// two 0x2000 ROM-streamer buffers at 0x80089518/0x8008B518, the 0x801077E0 table
+// read, and the six audio banks from 0x80191520. The streamer is the one worth
+// naming, because it does read ROM that lies inside a section: its 0x210 read at
+// rom 0x5D280 is inside .main, but it lands at 0x80089518, which implies a base
+// of 0x8002D2F8 against .main's 0x80000460, so (2) refuses it.
+//
+// Only a chunk that passes both advances the tracker below, and the section is
+// registered at the moment its bytes are all present -- not before, so nothing
+// half-fetched is ever callable, and not later, so it is callable by the time the
+// game's own load returns.
+//
+// KNOWN LIMIT, and the reason `rejected_out` exists: (2) does not hold for a
+// RELOCATED load. The game does relocate overlays -- .file_23 has been observed
+// loaded both at its slot 0x801BF1A0 and at 0x801FA948 in the same run -- and one
+// arriving that way through the unannounced path would be refused here rather
+// than registered. Nothing yet shows that happening; if it ever does, it shows
+// up as a rejection line in the DMA trace rather than as silence.
+//
+// This never double-registers. The patched loader announces its load *before*
+// the DMA, so by the time do_dma sees the same transfer the section is already
+// in loaded_sections at that address and is skipped.
+extern "C" uint32_t register_unannounced_overlays(uint32_t rom, int32_t ram_addr, uint32_t size,
+                                                 uint32_t* ram_out, uint32_t* rejected_out) {
+    if (size == 0 || sections_info.num_code_sections == 0) {
+        return 0;
+    }
+
+    // Condition 1: the section whose ROM range contains this chunk.
+    //
+    // Deliberately NOT the lower_bound/upper_bound pair that load_overlays uses.
+    // That idiom is only sound for a range that starts on a section boundary, and
+    // this function is offered every cart DMA in the game. A read starting in the
+    // MIDDLE of a section inverts the two bounds -- for the streamer's read at rom
+    // 0x5D280, inside .main, lower_bound returns the first overlay while
+    // upper_bound returns .main, so upper < lower and `for (it = lower; it !=
+    // upper; ++it)` walks off the end of the section array. That was a 0xC0000005
+    // on the third overlay load of a plain boot.
+    //
+    // This is the ordinary containing-interval search instead: the last section
+    // starting at or before `rom`, then a bounds check. init_overlays sorted
+    // code_sections by rom_addr and the ranges are disjoint, so it is exact.
+    const SectionTableEntry* begin = &sections_info.code_sections[0];
+    const SectionTableEntry* end = begin + sections_info.num_code_sections;
+    auto it = std::upper_bound(begin, end, rom,
+        [](uint32_t addr, const SectionTableEntry& entry) {
+            return addr < entry.rom_addr;
+        }
+    );
+    if (it == begin) {
+        return 0;
+    }
+    --it;
+    if (rom >= it->rom_addr + it->size) {
+        return 0;  // in a gap between sections
+    }
+
+    const SectionTableEntry& section = *it;
+    size_t section_table_index = (size_t)(it - begin);
+
+    // Condition 2: the base this chunk implies is the section's link address.
+    int32_t implied_base = ram_addr - (int32_t)(rom - section.rom_addr);
+    if (implied_base != (int32_t)section.ram_addr) {
+        if (rejected_out != nullptr) {
+            *rejected_out = (uint32_t)implied_base;
+        }
+        return 0;
+    }
+
+    // Past this point only a genuine overlay-load chunk gets through, so the
+    // tracker and the registration can afford a lock. do_dma runs on whichever
+    // guest thread started the transfer, and loaded_sections is also mutated by
+    // the patched loader on the game thread.
+    static std::mutex claim_mutex;
+    std::lock_guard<std::mutex> lock(claim_mutex);
+
+    // Contiguous-progress tracker for the run of chunks. The loader only ever
+    // advances forward and contiguously, so a high-water mark is enough: a chunk
+    // that does not begin exactly where the last one ended restarts the run.
+    static size_t pending_section = (size_t)-1;
+    static uint32_t pending_covered_end = 0;
+
+    if (pending_section != section_table_index || rom != pending_covered_end) {
+        // A run only ever starts at the section's own beginning.
+        if (rom != section.rom_addr) {
+            pending_section = (size_t)-1;
+            return 0;
+        }
+        pending_section = section_table_index;
+        pending_covered_end = section.rom_addr;
+    }
+
+    pending_covered_end = rom + size;
+
+    uint32_t section_end = section.rom_addr + section.size;
+    if (pending_covered_end < section_end) {
+        return 0;  // still arriving
+    }
+
+    pending_section = (size_t)-1;
+
+    // Already announced -- the patched loader's own whole-file DMA lands here,
+    // having registered the section just before moving the bytes.
+    bool already_loaded = std::any_of(loaded_sections.begin(), loaded_sections.end(),
+        [section_table_index, &section](const LoadedSection& s) {
+            return s.section_table_index == section_table_index
+                && s.loaded_ram_addr == (int32_t)section.ram_addr;
+        }
+    );
+    if (already_loaded) {
+        return 0;
+    }
+
+    // Logged before the mutation rather than after it, so a fault inside the
+    // eviction or the load still names the DMA that caused it.
+    if (getenv("HH_TRACE_DMA") != nullptr) {
+        fprintf(stderr, "[overlay] claiming unannounced: rom %08X -> ram %08X size %08X"
+                        " (section %zu, last chunk rom %08X size %08X)\n",
+                section.rom_addr, section.ram_addr, section.size,
+                section_table_index, rom, size);
+        fflush(stderr);
+    }
+
+    // Drop whatever these bytes destroyed, exactly as the patched loader's
+    // eviction does, and for the same reason: the game never announces that a
+    // slot's previous tenant is gone. The range is the section's own extent, since
+    // that is what the completed run wrote. The section being registered below is
+    // not loaded, so this cannot drop it.
+    unload_overlapping_overlays((int32_t)section.ram_addr, section.size);
+
+    load_overlay(section_table_index, (int32_t)section.ram_addr);
+    if (ram_out != nullptr) {
+        *ram_out = section.ram_addr;
+    }
+
+    return 1;
 }
 
 void recomp::overlays::init_overlays() {

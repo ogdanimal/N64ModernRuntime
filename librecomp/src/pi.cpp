@@ -8,6 +8,7 @@
 #include "librecomp/addresses.hpp"
 #include "librecomp/game.hpp"
 #include "librecomp/files.hpp"
+#include "librecomp/overlays.hpp"
 #include <ultramodern/ultra64.h>
 #include <ultramodern/ultramodern.hpp>
 
@@ -319,10 +320,44 @@ void do_dma(RDRAM_ARG PTR(OSMesgQueue) mq, gpr rdram_address, uint32_t physical_
             // load lines: a ROM range appearing here and not there is an
             // unregistered load.
             static const bool trace_dma = getenv("HH_TRACE_DMA") != nullptr;
+            uint32_t rom_offset = (uint32_t)(physical_addr - recomp::rom_base);
             if (trace_dma) {
                 fprintf(stderr, "[dma] rom %08X -> ram %08X size %08X\n",
-                        (uint32_t)(physical_addr - recomp::rom_base),
-                        (uint32_t)rdram_address, size);
+                        rom_offset, (uint32_t)rdram_address, size);
+            }
+
+            // Claim an overlay that this DMA delivered and nothing announced.
+            //
+            // The game has a second, unpatched archive loader
+            // (func_80004838_5438, the asynchronous streaming one) and an overlay
+            // arriving through it is never registered, so the first indirect call
+            // into it aborts in get_function. That is the
+            // `Failed to find function at 0x803757B0` crash on the transition into
+            // the battle system: .file_56 is the 0x343A0 overlay that load brings
+            // in. register_unannounced_overlays documents in full which loads it
+            // claims and why it cannot claim anything that is not an overlay load.
+            //
+            // HH_NO_DMA_OVERLAY_REGISTER=1 restores the previous behaviour
+            // exactly, so the fix can be attributed.
+            static const bool register_unannounced = getenv("HH_NO_DMA_OVERLAY_REGISTER") == nullptr;
+            if (register_unannounced) {
+                uint32_t registered_ram = 0;
+                uint32_t rejected_ram = 0;
+                uint32_t num = register_unannounced_overlays(rom_offset, (int32_t)rdram_address, size,
+                                                             &registered_ram, &rejected_ram);
+                // Always reported, not only under the trace: this is a load the
+                // game performed that the port had no other record of, and it is
+                // rare -- one line per unannounced overlay, not one per DMA.
+                if (num != 0) {
+                    fprintf(stderr, "[overlay] claimed an unannounced load: rom %08X -> ram %08X size %08X"
+                                    " (%u section%s)\n",
+                            rom_offset, registered_ram, size, num, num == 1 ? "" : "s");
+                }
+                else if (rejected_ram != 0 && trace_dma) {
+                    fprintf(stderr, "[overlay] declined an unannounced load: rom %08X -> ram %08X size %08X"
+                                    " (relocated away from its link address)\n",
+                            rom_offset, rejected_ram, size);
+                }
             }
 
             // read cart rom

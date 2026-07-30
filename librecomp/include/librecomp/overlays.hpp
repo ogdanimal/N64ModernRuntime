@@ -84,6 +84,11 @@ namespace recomp {
 
         void add_loaded_function(int32_t ram_addr, recomp_func_t* func);
 
+        // Whether a vram address is currently callable. get_function answers the
+        // same question but exits the process on a miss, so it cannot be used to
+        // ASK -- only to call. Returns nullptr if nothing is mapped there.
+        recomp_func_t* find_loaded_function(int32_t ram_addr);
+
         struct BasePatchedFunction {
             size_t patch_section;
             size_t function_index;
@@ -103,5 +108,16 @@ namespace recomp {
 extern "C" void load_overlays(uint32_t rom, int32_t ram_addr, uint32_t size);
 extern "C" void unload_overlays(int32_t ram_addr, uint32_t size);
 extern "C" uint32_t unload_overlapping_overlays(int32_t ram_addr, uint32_t size);
+
+// Registers an overlay that a raw cart DMA delivered without anything having
+// announced it. See the definition in overlays.cpp for the full rationale and
+// for exactly which loads it will and will not claim.
+//
+// `rejected_out` receives the ram address of a section that looked like an
+// overlay load but failed the placement test, so a caller tracing DMA can see
+// the near-misses. Returns the number of sections newly registered, and writes
+// the last one's ram address to `ram_out`.
+extern "C" uint32_t register_unannounced_overlays(uint32_t rom, int32_t ram_addr, uint32_t size,
+                                                 uint32_t* ram_out, uint32_t* rejected_out);
 
 #endif
