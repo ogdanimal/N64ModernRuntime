@@ -134,9 +134,14 @@ void set_save_file_path(const std::u8string& subfolder, const std::u8string& nam
 }
 
 void update_save_file() {
+    const std::filesystem::path save_file_path = ultramodern::get_save_file_path();
     bool saving_failed = false;
+    // Why it failed, if it did. Saving has several distinct failure modes that
+    // all used to surface as the same sentence, which made a user report of
+    // "saving does not work" impossible to narrow without a round trip.
+    std::string failure_detail;
     {
-        std::ofstream save_file = recomp::open_output_file_with_backup(ultramodern::get_save_file_path(), std::ios_base::binary);
+        std::ofstream save_file = recomp::open_output_file_with_backup(save_file_path, std::ios_base::binary, &failure_detail);
 
         if (save_file.good()) {
             std::lock_guard lock{ save_context.save_buffer_mutex };
@@ -147,15 +152,23 @@ void update_save_file() {
         }
     }
     if (!saving_failed) {
-        saving_failed = !recomp::finalize_output_file_with_backup(ultramodern::get_save_file_path());
+        saving_failed = !recomp::finalize_output_file_with_backup(save_file_path, &failure_detail);
     }
     // Only on success: on failure the file on disk is not the buffer we just
     // wrote, so reporting a flush would hand the callback stale content.
     if (!saving_failed && save_flush_callback != nullptr) {
-        save_flush_callback(ultramodern::get_save_file_path());
+        save_flush_callback(save_file_path);
     }
     if (saving_failed) {
-        ultramodern::error_handling::message_box("Failed to write to the save file. Check your file permissions and whether the save folder has been moved to Dropbox or similar, as this can cause issues.");
+        std::string message = "Failed to write to the save file.\n\n";
+        if (!failure_detail.empty()) {
+            message += failure_detail + "\n\n";
+        }
+        else {
+            message += save_file_path.string() + "\n\n";
+        }
+        message += "Check your file permissions and whether the save folder has been moved to Dropbox or similar, as this can cause issues.";
+        ultramodern::error_handling::message_box(message.c_str());
     }
 }
 
