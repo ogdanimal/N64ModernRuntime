@@ -42,6 +42,13 @@ void init_thread_cleanup();
 void change_save_file(const std::u8string& subfolder, const std::u8string& name);
 std::filesystem::path get_save_file_path();
 
+// Where a game's save file WOULD live, without requiring init_saving() to have
+// run. get_save_file_path() reports the live path and is empty until the game
+// starts, so anything that touches save files before then -- importing one, for
+// instance -- needs this instead. Single source of truth for the layout: the
+// live path is built from it too.
+std::filesystem::path get_save_file_path_for(const std::u8string& subfolder, const std::u8string& name);
+
 // Save observation hooks.
 //
 // Both are optional, default to unset, and carry no policy: librecomp reports

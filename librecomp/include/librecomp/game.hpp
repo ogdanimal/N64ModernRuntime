@@ -103,6 +103,11 @@ namespace recomp {
     );
 
     SaveType get_save_type();
+
+    // Bytes of save storage a save type provides. Exposed so that callers which
+    // need to size or validate a save file (importing one, say) do not have to
+    // keep their own copy of this table and drift from it.
+    size_t get_save_size(SaveType save_type);
     bool eeprom_allowed();
     bool sram_allowed();
     bool flashram_allowed();
